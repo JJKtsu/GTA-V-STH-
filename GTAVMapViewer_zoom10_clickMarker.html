@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>GTAV Map Viewer</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    html, body, #map {
+      height: 100%;
+      margin: 0;
+    }
+
+    #coordsDisplay {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: white;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-family: monospace;
+      box-shadow: 0 0 5px rgba(0,0,0,0.3);
+      z-index: 1000;
+    }
+
+    #controls button, #controls select {
+      margin-top: 5px;
+      position: absolute;
+      right: 10px;
+      z-index: 1000;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      color: white;
+    }
+
+    #downloadButton { top: 60px; background: #4CAF50; }
+    #resetButton { top: 110px; background: #f44336; }
+    #undoButton { top: 160px; background: #2196F3; }
+    #pauseButton { top: 210px; background: #FF9800; }
+    #playButton { top: 260px; background: #009688; }
+    #speedSelect {
+      top: 310px;
+      right: 10px;
+      z-index: 1000;
+      position: absolute;
+      padding: 6px;
+      border-radius: 5px;
+    }
+
+    button:hover { opacity: 0.9; }
+
+    #zoomWindow {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      border: 2px solid #333;
+      overflow: hidden;
+      z-index: 1000;
+      pointer-events: none;
+    }
+
+  </style>
+</head>
+<body>
+  <div id="coordsDisplay">Klik op de kaart</div>
+
+  <div id="controls">
+    <button id="downloadButton">Download CSV</button>
+    <button id="resetButton">Reset</button>
+    <button id="undoButton">Undo laatste klik</button>
+    <button id="pauseButton">⏸ Pauzeer tijd</button>
+    <button id="playButton">▶ Playback</button>
+    <select id="speedSelect">
+      <option value="1">Snelheid: 1x</option>
+      <option value="2">2x</option>
+      <option value="4">4x</option>
+      <option value="8">8x</option>
+      <option value="16">16x</option>
+    </select>
+  </div>
+
+  <div id="zoomWindow"></div>
+
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    var map = L.map('map', { crs: L.CRS.Simple, minZoom: -2 });
+    var imageUrl = 'GTAVMap.png';
+    var imageWidth = 3331, imageHeight = 3331;
+    var imageBounds = [[0, 0], [imageHeight, imageWidth]];
+    L.imageOverlay(imageUrl, imageBounds).addTo(map);
+    map.fitBounds(imageBounds);
+
+    var zoomMap = L.map('zoomWindow', {
+      crs: L.CRS.Simple,
+      zoomControl: false,
+      attributionControl: false,
+      dragging: false,
+      scrollWheelZoom: false,
+      doubleClickZoom: false,
+      boxZoom: false,
+      keyboard: false
+    });
+    L.imageOverlay(imageUrl, imageBounds).addTo(zoomMap);
+    zoomMap.fitBounds(imageBounds);
+    zoomMap.setZoom(1.0);
+
+    var zoomMarker = L.circleMarker([imageHeight / 2, imageWidth / 2], {
+      radius: 5,
+      color: 'red',
+      fillColor: 'red',
+      fillOpacity: 1
+    }).addTo(zoomMap);
+
+    var lastPos = null;
+    var smoothing = 0.15;
+
+    map.on('mousemove', function (e) {
+      lastPos = e.latlng;
+    });
+    var zoomLastMarker = null;
+
+
+    function smoothFollow() {
+      if (lastPos) {
+        var current = zoomMap.getCenter();
+        var target = lastPos;
+
+        var lat = current.lat + (target.lat - current.lat) * smoothing;
+        var lng = current.lng + (target.lng - current.lng) * smoothing;
+
+        var smoothed = L.latLng(lat, lng);
+        zoomMarker.setLatLng(smoothed);
+        zoomMap.setView(smoothed, 1.0, { animate: false });
+      }
+      requestAnimationFrame(smoothFollow);
+    }
+
+    smoothFollow();
+
+    var maxRecent = 5;
+    var allMarkers = [];
+    var coordsData = [];
+    var startTime = null;
+    var timingPaused = false;
+    var pausedAt = null;
+    var pausedDuration = 0;
+
+    function formatElapsedTime(ms) {
+      let totalSeconds = Math.floor(ms / 1000);
+      let minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+      let seconds = String(totalSeconds % 60).padStart(2, '0');
+      return `${minutes}:${seconds}`;
+    }
+
+    map.on('click', function (e) {
+      if (timingPaused) return;
+
+      var x = e.latlng.lng.toFixed(2);
+      var y = e.latlng.lat.toFixed(2);
+
+      var now = Date.now();
+      if (!startTime) {
+        startTime = now;
+        pausedDuration = 0;
+      }
+      var elapsed = now - startTime - pausedDuration;
+      var timeSinceStart = formatElapsedTime(elapsed);
+
+      document.getElementById('coordsDisplay').textContent = `Laatste klik: X=${x} / Y=${y} (T=${timeSinceStart})`;
+
+      var marker = L.circle([y, x], {
+        radius: 7,
+        color: 'blue',
+        fillColor: 'blue',
+        fillOpacity: 0.8
+      }).addTo(map);
+
+      allMarkers.push(marker);
+
+      if (allMarkers.length > maxRecent) {
+        var oldest = allMarkers.shift();
+        map.removeLayer(oldest);
+      }
+
+      allMarkers.forEach((m, i) => {
+        let isLast = i === allMarkers.length - 1;
+        m.setStyle({
+          color: isLast ? 'red' : 'blue',
+          fillColor: isLast ? 'red' : 'blue'
+        });
+      });
+
+      coordsData.push({ x, y, time: timeSinceStart });
+    });
+
+    document.getElementById('pauseButton').addEventListener('click', function () {
+      if (!timingPaused) {
+        pausedAt = Date.now();
+        timingPaused = true;
+        document.getElementById('pauseButton').textContent = '▶ Hervat tijd';
+      } else {
+        let now = Date.now();
+        pausedDuration += now - pausedAt;
+        timingPaused = false;
+        pausedAt = null;
+        document.getElementById('pauseButton').textContent = '⏸ Pauzeer tijd';
+      }
+    });
+
+    document.getElementById('undoButton').addEventListener('click', function () {
+      if (allMarkers.length > 0) {
+        var removed = allMarkers.pop();
+        map.removeLayer(removed);
+        coordsData.pop();
+
+        if (coordsData.length > 0) {
+          let last = coordsData[coordsData.length - 1];
+          document.getElementById('coordsDisplay').textContent = `Laatste klik: X=${last.x} / Y=${last.y} (T=${last.time})`;
+        } else {
+          document.getElementById('coordsDisplay').textContent = 'Klik op de kaart';
+        }
+
+        allMarkers.forEach((m, i) => {
+          let isLast = i === allMarkers.length - 1;
+          m.setStyle({
+            color: isLast ? 'red' : 'blue',
+            fillColor: isLast ? 'red' : 'blue'
+          });
+        });
+      }
+    });
+
+    document.getElementById('resetButton').addEventListener('click', function () {
+      allMarkers.forEach(marker => map.removeLayer(marker));
+      allMarkers = [];
+      coordsData = [];
+      startTime = null;
+      timingPaused = false;
+      pausedDuration = 0;
+      document.getElementById('pauseButton').textContent = '⏸ Pauzeer tijd';
+      document.getElementById('coordsDisplay').textContent = 'Klik op de kaart';
+    });
+
+    document.getElementById('downloadButton').addEventListener('click', function () {
+      var csvContent = "data:text/csv;charset=utf-8,X,Y,Tijd\n" +
+        coordsData.map(r => `${r.x},${r.y},${r.time}`).join("\n");
+
+      var encodedUri = encodeURI(csvContent);
+      var link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "kliklocaties_GTAV.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
+
+    document.getElementById('playButton').addEventListener('click', function () {
+      if (coordsData.length === 0) return;
+      let speed = parseInt(document.getElementById('speedSelect').value);
+      let i = 0;
+      let ghost = null;
+
+      function step() {
+        if (i >= coordsData.length) return;
+        let point = coordsData[i];
+        if (ghost) map.removeLayer(ghost);
+
+        ghost = L.circle([point.y, point.x], {
+          radius: 7,
+          color: 'lime',
+          fillColor: 'lime',
+          fillOpacity: 1
+        }).addTo(map);
+      
+
+        i++;
+        if (i < coordsData.length) {
+          setTimeout(step, 1000 / speed);
+        }
+      }
+
+      step();
+    });
+  </script>
+</body>
+</html>
